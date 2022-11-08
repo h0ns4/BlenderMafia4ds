@@ -51,6 +51,8 @@ class Mafia4ds_Exporter:
     def IsLod(self, mesh):
         return mesh.name.find("_lod") != -1
     
+    def IsPortal(self, mesh):
+        return mesh.name.find("_port") != -1
     
     def SerializeString(self, writer, string):
         string = path.basename(string)
@@ -249,8 +251,113 @@ class Mafia4ds_Exporter:
         writer.write(struct.pack("fff",  aabbMin[0], aabbMin[2], aabbMin[1]))
         writer.write(struct.pack("fff",  aabbMax[0], aabbMax[2], aabbMax[1]))
     
+    def SerializeBillboard(self, writer, mesh, meshProps):
+        writer.write(struct.pack("I",  meshProps.RotationAxis))
+        writer.write(struct.pack("B",  meshProps.RotationMode))
+        
+    def SerializePortal(self, writer, mesh):
+        
+        # apply modifiers
+        meshProps = mesh.MeshProps
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        mesh      = mesh.evaluated_get(depsgraph)
+        
+        bMesh     = bmesh.new()
+        bMesh.from_mesh(mesh.to_mesh())
+        
+        # vertices
+        vertices = bMesh.verts
+        
+        writer.write(struct.pack("B", len(vertices)))
+        writer.write(struct.pack("I", meshProps.portalflags))
+        writer.write(struct.pack("f", meshProps.nearRange))
+        writer.write(struct.pack("f", meshProps.farRange))
+        faces =bMesh.faces
+        faces.ensure_lookup_table()
+        vertices.ensure_lookup_table()
+        #faces
+        Portalnormal = faces[0].normal  
+
+        writer.write(struct.pack("fff", Portalnormal[2], Portalnormal[1],Portalnormal[0]))#
+        writer.write(struct.pack("f", vertices[0].co.dot(Portalnormal)))
+
+        for vertex in vertices:
+            writer.write(struct.pack("fff", vertex.co[0], vertex.co[2], vertex.co[1]))
+
+    def SerializeSector(self, writer, mesh, meshes):
+        meshProps = mesh.MeshProps
+        
+        writer.write(struct.pack("I", meshProps.flags1)) # lod ratio
+        writer.write(struct.pack("I", meshProps.flags2))
+
+        # apply modifiers
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        mesh      = mesh.evaluated_get(depsgraph)
+        
+        
+        
+        bMesh     = bmesh.new()
+        bMesh.from_mesh(mesh.to_mesh())
+        
+        bmesh.ops.triangulate(bMesh, faces = bMesh.faces[:], quad_method = "BEAUTY", ngon_method = "BEAUTY")
+        
+        # vertices
+        vertices = bMesh.verts
+        writer.write(struct.pack("I", len(vertices)))
+        
+        # faces
+        faces = bMesh.faces
+        writer.write(struct.pack("I", len(faces)))
+        
+        for vertex in vertices:
+            writer.write(struct.pack("fff", vertex.co[0], vertex.co[2], vertex.co[1]))
+        
+        
+        for face in faces:
+            writer.write(struct.pack("HHH", face.verts[0].index, face.verts[2].index, face.verts[1].index))
+        aabb    = mesh.bound_box
+        aabbMin = [ aabb[0][0], aabb[0][1], aabb[0][2] ]
+        aabbMax = [ aabb[0][0], aabb[0][1], aabb[0][2] ]
+        
+        for corner in aabb:
+            if aabbMin[0] > corner[0]:
+                aabbMin[0] = corner[0]
+            if aabbMax[0] < corner[0]:
+                aabbMax[0] = corner[0]
+            
+            if aabbMin[1] > corner[1]:
+                aabbMin[1] = corner[1]
+            if aabbMax[1] < corner[1]:
+                aabbMax[1] = corner[1]
+            
+            if aabbMin[2] > corner[2]:
+                aabbMin[2] = corner[2]
+            if aabbMax[2] < corner[2]:
+                aabbMax[2] = corner[2]
+        
+        writer.write(struct.pack("fff",  aabbMin[0], aabbMin[2], aabbMin[1]))
+        writer.write(struct.pack("fff",  aabbMax[0], aabbMax[2], aabbMax[1]))
+        del bMesh
+        
+        portals    = []
+        portalName = "{}_port".format(mesh.name)
+        
+        for portal in meshes:
+            if portal == mesh:
+                continue
+            
+            if portal.name.startswith(portalName) == False:
+                continue
+            
+            portals.append(portal)
+        
+        portals.sort(key = lambda mesh: mesh.name)
+        writer.write(struct.pack("B", len(portals) + 0)) # portal count
+
+        for mesh in portals:
+            self.SerializePortal(writer, mesh)
     
-    def SerializeMesh(self, writer, mesh, meshes):
+    def SerializeMesh(self, writer, mesh, meshesWithoutLods, meshes):
         meshProps = mesh.MeshProps
         writer.write(struct.pack("B", int(meshProps.Type, 0)))
         
@@ -262,7 +369,7 @@ class Mafia4ds_Exporter:
         parent    = mesh.parent
         
         if parent:
-            parentIdx = meshes.index(parent) + 1
+            parentIdx = meshesWithoutLods.index(parent) + 1
         
         location = mesh.location
         scale    = mesh.scale
@@ -280,15 +387,21 @@ class Mafia4ds_Exporter:
         visualType = meshProps.VisualType
         
         if type == "0x01":
-            if visualType != "0x00":
+            if visualType == "0x00":
+                self.SerializeVisual(writer, mesh, meshProps, meshes)
+            elif visualType == "0x04":
+                self.SerializeVisual(writer, mesh, meshProps, meshes)
+                self.SerializeBillboard(writer, mesh, meshProps)
+            else:
                 ShowError("Unsupported visual type {}!".format(visualType))
                 return
             
-            self.SerializeVisual(writer, mesh, meshProps, meshes)
-        
+            
         elif type == "0x06":
             self.SerializeDummy(writer, mesh)
-        
+            
+        elif type == "0x05":
+            self.SerializeSector(writer, mesh, meshes)  
         else:
             ShowError("Unsupported mesh type {}!".format(type))
             return
@@ -320,22 +433,34 @@ class Mafia4ds_Exporter:
         elif includeMeshesMode == "1":
             allMeshes = bpy.context.visible_objects
         
-        meshes    = []
-        meshCount = 0
+        meshes            = []
+        meshesWithoutLods = []
+        meshesHelp        = []
+        meshCount         = 0
         
         for mesh in allMeshes:
             if mesh.type == "MESH":
                 meshes.append(mesh)
+                meshesHelp.append(mesh)
                 
-                if self.IsLod(mesh) == False:
+                if self.IsLod(mesh) == False and self.IsPortal(mesh) == False:
                     meshCount += 1
         
         writer.write(struct.pack("H", meshCount))
         
         for mesh in meshes:
-            if self.IsLod(mesh) == False:
-                self.SerializeMesh(writer, mesh, meshes)
+            if mesh.parent != None:
+                meshesHelp.append(mesh)
+                meshesHelp.pop(meshesHelp.index(mesh))
+        meshes = meshesHelp
         
+        for mesh in meshes:
+            if self.IsLod(mesh) == False and self.IsPortal(mesh) == False:
+                meshesWithoutLods.append(mesh)
+                
+        for mesh in meshesWithoutLods:
+            self.SerializeMesh(writer, mesh, meshesWithoutLods, meshes)
+           
         # allow 5ds animation
         isAnimated = getattr(scene, "isAnimated", 0)
         writer.write(struct.pack("B", isAnimated))
