@@ -164,7 +164,7 @@ class Mafia4ds_Importer:
         for faceGroupIdx in range(faceGroupCount):
             faceCount       = struct.unpack("H", reader.read(2))[0]
             
-            ops.object.material_slot_add({ "object" : mesh })
+            mesh.data.materials.append(None)
             materialSlotIdx = len(mesh.material_slots) - 1
             materialSlot    = mesh.material_slots[materialSlotIdx]
             
@@ -215,7 +215,6 @@ class Mafia4ds_Importer:
             self.DeserializeVisualLod(reader, materials, mesh, meshData, meshProps)
             
             mesh.select_set(True)
-            ops.object.shade_smooth()
             
             if lodIdx > 0:
                 mesh.hide_set(True)
