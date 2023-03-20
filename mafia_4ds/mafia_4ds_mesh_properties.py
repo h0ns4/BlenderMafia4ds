@@ -37,6 +37,9 @@ class Mafia4ds_GlobalMeshProperties(types.PropertyGroup):
     RotationMode : props.BoolProperty  (name = "Rotation Mode", default = True)
     flags1       : props.IntProperty   (name = "Flags 1", default = 2049)
     flags2       : props.IntProperty   (name = "Flags 2", default = 0)
+    portalflags  : props.IntProperty   (name = "Portal Flags", default = 4)
+    nearRange    : props.IntProperty   (name = "Near Range", default = 0)
+    farRange     : props.IntProperty   (name = "Far Range", default = 0)
 
 class Mafia4ds_MeshPropertiesPanel(types.Panel):
     "Mafia 4ds Mesh Properties"
@@ -74,6 +77,7 @@ class Mafia4ds_MeshPropertiesPanel(types.Panel):
         if meshProps.Type == "0x05":
             layout.prop(meshProps, "flags1")
             layout.prop(meshProps, "flags2")
+        layout.prop(meshProps, "portalflags")
 
 def register():
     utils.register_class(Mafia4ds_GlobalMeshProperties)
